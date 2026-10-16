@@ -25,9 +25,11 @@ jobs:
         python-version: '3.10'
 
     - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements-win64.txt
+        run: |
+          python -m pip install --upgrade pip
+          pip install wheel pyinstaller PyQt5 requests cryptography certifi Pillow
+          if (Test-Path "requirements-win64.txt") { pip install -r requirements-win64.txt }
+          if (Test-Path "requirements.txt") { pip install -r requirements.txt }
 
     - name: Build Picture to Icon
       run: |
