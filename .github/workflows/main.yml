@@ -24,6 +24,11 @@ jobs:
         with:
           python-version: '3.10'
 
+      - name: Show Repository Structure
+        run: |
+          Write-Host "=== Repository Files ==="
+          Get-ChildItem -Recurse -File | Select-Object FullName
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -59,36 +64,39 @@ jobs:
           '@ | Set-Content -Path make_icon.py -Encoding UTF8
           python make_icon.py
 
-      - name: Create Python Build Script
+      - name: Generate PyInstaller Build via Python
         run: |
-          @'
+          python -c @"
           import os
           import subprocess
           import sys
 
-          print("Searching for Python entry point...")
+          print('Scanning directory for .py files...')
           py_files = []
           for root, dirs, files in os.walk('.'):
               if any(x in root for x in ['venv', '.git', 'build', 'dist', 'output']):
                   continue
               for f in files:
-                  if f.endswith('.py') and f != 'build_client.py' and f != 'make_icon.py':
-                      py_files.append(os.path.join(root, f))
+                  if f.endswith('.py') and f not in ['build_client.py', 'make_icon.py']:
+                      full_path = os.path.join(root, f)
+                      py_files.append(full_path)
+                      print(f'Found: {full_path}')
 
+          # Выбираем наиболее подходящий файл
           target = None
           for f in py_files:
-              if 'client' in f.lower() or 'udsclient' in f.lower() or 'main' in f.lower():
+              if 'client.py' in f.lower() or 'udsclient.py' in f.lower() or 'main.py' in f.lower():
                   target = f
                   break
-
+          
           if not target and py_files:
               target = py_files[0]
 
           if not target:
-              print("Error: No Python entry point found!")
+              print('CRITICAL: No .py files found in repository!')
               sys.exit(1)
 
-          print(f"Selected entry point: {target}")
+          print(f'=== Using compilation target: {target} ===')
 
           cmd = [
               'pyinstaller', '--clean', '--console', '--onedir', '--name', 'udsclient',
@@ -101,15 +109,11 @@ jobs:
           ]
           subprocess.check_call(cmd)
 
-          if not os.path.exists("dist/udsclient/udsclient.exe"):
-              print("Error: dist/udsclient/udsclient.exe was not created.")
+          if not os.path.exists('dist/udsclient/udsclient.exe'):
+              print('Error: dist/udsclient/udsclient.exe was not created.')
               sys.exit(1)
-          print("PyInstaller build completed successfully!")
-          '@ | Set-Content -Path build_client.py -Encoding UTF8
-
-      - name: Run Build Script
-        run: |
-          python build_client.py
+          print('PyInstaller build completed successfully!')
+          "
 
       - name: Install NSIS
         run: |
