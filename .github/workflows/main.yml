@@ -59,24 +59,11 @@ jobs:
           '@ | Set-Content -Path make_icon.py -Encoding UTF8
           python make_icon.py
 
-      - name: Find Entry Point and Generate PyInstaller Build
+      - name: Generate PyInstaller Build
         run: |
-          Write-Host "Searching for Python entry point..."
-          $pyFiles = Get-ChildItem -Recurse -Filter "*.py" \vert{} Where-Object { $_.FullName -notmatch "venv|\.git|build|dist" }
-          
-          # Ищем файл, похожий на клиент или основную точку входа
-          $targetFile = ($pyFiles \vert{} Where-Object {$_.Name -match "client|main|uds" } | Select-Object -First 1).FullName
-          
-          if (-not $targetFile) {
-              # Если специфичный не найден, берем первый попавшийся .py в корне или src
-              $targetFile = ($pyFiles | Select-Object -First 1).FullName
-          }
-
-          if (-not $targetFile) {
-              throw "No Python entry point found in the repository!"
-          }
-
-          Write-Host "Using entry point: $targetFile"
+          # Автоматически находим первый попавшийся исполняемый .py файл внутри src или репозитория
+          $target = (Get-ChildItem -Recurse -Filter "*.py" \vert{} Where-Object { $_.FullName -notmatch "venv|\.git|build|dist" } | Select-Object -First 1).FullName
+          Write-Host "Compiling target script: $target"
 
           pyinstaller --clean --console --onedir --name udsclient `
             --icon "udsclient.ico" `
@@ -92,7 +79,7 @@ jobs:
             --hidden-import requests `
             --hidden-import cryptography `
             --hidden-import certifi `
-            $targetFile
+            $target
 
           if (-not (Test-Path "dist/udsclient/udsclient.exe")) {
               throw "dist/udsclient/udsclient.exe was not created."
