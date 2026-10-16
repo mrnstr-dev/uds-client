@@ -1,0 +1,71 @@
+name: Build UDS Clients
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          architecture: 'x64'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller wheel
+          if (Test-Path "requirements.txt") { pip install -r requirements.txt }
+          pip install PyQt5 requests cryptography certifi
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress
+
+      - name: Build Executable via PyInstaller
+        run: |
+          pyinstaller --noconsole --onedir --name udsclient `
+            --icon=server/src/uds/static/modern/img/udsicon.png `
+            --add-data "src;src" `
+            udsclient.py
+
+      - name: Compile Inno Setup Installer
+        run: |
+          if (Test-Path "installer.iss") {
+            ISCC.exe /DAppVersion=4.0.0 installer.iss
+          } elseif (Test-Path "windows/installer.iss") {
+            ISCC.exe /DAppVersion=4.0.0 windows/installer.iss
+          } else {
+            # Генерация минимального Inno Setup скрипта, если файл отсутствует
+            @"
+            [Setup]
+            AppName=OpenUDS Client
+            AppVersion=4.0.0
+            DefaultDirName={autopf}\OpenUDS Client
+            DefaultGroupName=OpenUDS
+            OutputDir=output
+            OutputBaseFilename=UDSClientSetup-4.0.0
+            Compression=lzma2
+            SolidCompression=yes
+
+            [Files]
+            Source: "dist\udsclient\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+            [Registry]
+            Root: HKCR; Subkey: "uds"; ValueType: string; ValueData: "URL:OpenUDS Protocol"; Flags: uninsdeletekey
+            Root: HKCR; Subkey: "uds"; ValueName: "URL Protocol"; ValueType: string; ValueData: ""
+            Root: HKCR; Subkey: "uds\DefaultIcon"; ValueType: string; ValueData: "{app}\udsclient.exe,0"
+            Root: HKCR; Subkey: "uds\shell\open\command"; ValueType: string; ValueData: """{app}\udsclient.exe"" ""%1"""
+            "@ | Set-Content -Path dynamic_setup.iss -Encoding UTF8
+            ISCC.exe dynamic_setup.iss
+          }
+
+      - name: Upload Windows Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: UDSClientSetup-4.0.0.exe
+          path: output/UDSClientSetup-4.0.0.exe
