@@ -1,106 +1,190 @@
-name: Build UDS Clients
+name: build
 
 on:
+  push:
+  pull_request:
   workflow_dispatch:
 
 jobs:
-  build-windows:
+  build:
     runs-on: windows-latest
+
     steps:
-      - name: Checkout repository
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Inspect repository tree
-        shell: pwsh
-        run: |
-          Write-Host "=== Структура репозитория ==="
-          Get-ChildItem -Recurse -Depth 2 | Select-Object FullName
-
-      - name: Set up Python
+      - name: Set up Python 3.10
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-          architecture: 'x64'
+          python-version: '3.10'
 
-      - name: Install Dependencies
+      - name: Install dependencies
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          pip install pyinstaller wheel
-          if (Test-Path "requirements.txt") { pip install -r requirements.txt }
-          pip install PyQt5 requests cryptography certifi
+          pip install wheel pyinstaller PyQt5 requests cryptography certifi Pillow
+          if (Test-Path "requirements-win64.txt") {
+              pip install -r requirements-win64.txt
+          } elseif (Test-Path "requirements.txt") {
+              pip install -r requirements.txt
+          } elseif (Test-Path "requirements/windows.txt") {
+              pip install -r requirements/windows.txt
+          }
 
-      - name: Install Inno Setup
-        shell: pwsh
-        run: choco install innosetup --no-progress
-
-      - name: Build Executable via PyInstaller
+      - name: Build Picture to Icon
         shell: pwsh
         run: |
-          # Определяем точный путь к главному скрипту
-          $entryScript = ""
-          if (Test-Path "src/udsclient.py") {
-              $entryScript = "src/udsclient.py"
-          } elseif (Test-Path "udsclient.py") {
-              $entryScript = "udsclient.py"
+          python - << 'EOF'
+          import os
+          from PIL import Image
+
+          candidates = [
+              "src/uds/static/modern/img/udsicon.png",
+              "src/udsclient/media/udsicon.png",
+              "src/udsclient/media/icon.png",
+              "src/media/icon.png",
+              "media/icon.png",
+              "udsicon.png"
+          ]
+          found = None
+          for path in candidates:
+              if os.path.exists(path):
+                  found = path
+                  break
+
+          if found:
+              img = Image.open(found)
+              img.save("udsclient.ico", format="ICO", sizes=[(16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
+              print(f"Icon built successfully from {found}")
+          else:
+              img = Image.new("RGBA", (64, 64), color=(0, 120, 215, 255))
+              img.save("udsclient.ico", format="ICO")
+              print("Default icon generated")
+          EOF
+
+      - name: Create PyInstaller Spec File
+        shell: pwsh
+        run: |
+          $entry = ""
+          if (Test-Path "src/udsclient.py") { 
+              $entry = "src/udsclient.py" 
+          } elseif (Test-Path "udsclient.py") { 
+              $entry = "udsclient.py" 
+          } elseif (Test-Path "src/udsclient/client.py") { 
+              $entry = "src/udsclient/client.py" 
           } elseif (Test-Path "src/udsclient") {
               Copy-Item "src/udsclient" "src/udsclient.py"
-              $entryScript = "src/udsclient.py"
+              $entry = "src/udsclient.py"
           } else {
               $found = Get-ChildItem -Recurse -Filter "*udsclient*.py" | Select-Object -First 1
-              if ($found) { $entryScript = $found.FullName }
+              if ($found) {$entry = $found.FullName } else {$entry = "src/udsclient.py" }
           }
+          Write-Host "Используется точка входа: $entry"
+          pyi-makespec --noconsole --onedir --name udsclient --icon "udsclient.ico" --paths "src" $entry
 
-          Write-Host "Используем точку входа: $entryScript"
-
-          # Запуск сборки с добавлением src в пути поиска модулей
-          pyinstaller --noconsole --onedir --name udsclient `
-            --paths "src" `
-            --add-data "src;src" `
-            $entryScript
-
-          if (-not (Test-Path "dist/udsclient/udsclient.exe")) {
-              throw "PyInstaller не создал dist/udsclient/udsclient.exe"
-          }
-
-      - name: Compile Inno Setup Installer
+      - name: Generate PyInstaller build
         shell: pwsh
         run: |
+          pyinstaller --clean udsclient.spec
+          if (-not (Test-Path "dist/udsclient/udsclient.exe")) {
+              throw "Бинарный файл dist/udsclient/udsclient.exe не был создан."
+          }
+
+      - name: Extract version from Python file
+        shell: pwsh
+        run: |
+          $version = "4.0.0"
+          $verFiles = Get-ChildItem -Recurse -Filter "*version*.py"
+          foreach ($f in$verFiles) {
+              $match = Select-String -Path$f.FullName -Pattern '(__version__|VERSION)\s*=\s*["'']([^"'']+)["'']'
+              if ($match) {
+                  $version =$match.Matches.Groups[2].Value
+                  break
+              }
+          }
+          Write-Host "Определена версия: $version"
+          "APP_VERSION=$version" \vert{} Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Install NSIS
+        shell: pwsh
+        run: |
+          choco install nsis --no-progress
+          "C:\Program Files (x86)\NSIS" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Prepare files for installer
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path installer
           New-Item -ItemType Directory -Force -Path output
 
-          # Создаем конфигурационный скрипт инсталлятора
-          @"
-          [Setup]
-          AppName=OpenUDS Client
-          AppVersion=4.0.0
-          DefaultDirName={autopf}\OpenUDS Client
-          DefaultGroupName=OpenUDS
-          OutputDir=output
-          OutputBaseFilename=UDSClientSetup-4.0.0
-          Compression=lzma2
-          SolidCompression=yes
-          ArchitecturesInstallIn64BitMode=x64compatible
-          PrivilegesRequired=admin
+          $nativeNsi = Get-ChildItem -Recurse -Filter "*.nsi" \vert{} Where-Object { $_.FullName -notlike "*installer\installer.nsi*" } | Select-Object -First 1
+          if ($nativeNsi) {
+              Write-Host "Найден штатный NSIS скрипт: $($nativeNsi.FullName)"
+              Copy-Item $nativeNsi.FullName "installer/installer.nsi" -Force
+          } else {
+              Write-Host "Генерация универсального NSIS скрипта с регистрацией uds:// и udss://..."
+              @"
+              !include "MUI2.nsh"
+              Name "OpenUDS Client"
+              OutFile "..\output\UDSClientSetup-$($env:APP_VERSION).exe"
+              InstallDir "`$PROGRAMFILES64\OpenUDS Client"
+              RequestExecutionLevel admin
 
-          [Files]
-          Source: "dist\udsclient\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+              !define MUI_ABORTWARNING
+              !insertmacro MUI_PAGE_WELCOME
+              !insertmacro MUI_PAGE_DIRECTORY
+              !insertmacro MUI_PAGE_INSTFILES
+              !insertmacro MUI_PAGE_FINISH
+              !insertmacro MUI_LANGUAGE "English"
 
-          [Registry]
-          Root: HKCR; Subkey: "uds"; ValueType: string; ValueData: "URL:OpenUDS Protocol"; Flags: uninsdeletekey
-          Root: HKCR; Subkey: "uds"; ValueName: "URL Protocol"; ValueType: string; ValueData: ""
-          Root: HKCR; Subkey: "uds\DefaultIcon"; ValueType: string; ValueData: "{app}\udsclient.exe,0"
-          Root: HKCR; Subkey: "uds\shell\open\command"; ValueType: string; ValueData: """{app}\udsclient.exe"" ""%1"""
+              Section "MainSection" SEC01
+                SetOutPath "`$INSTDIR"
+                File /r "..\dist\udsclient\*.*"
 
-          Root: HKCR; Subkey: "udss"; ValueType: string; ValueData: "URL:OpenUDS Protocol"; Flags: uninsdeletekey
-          Root: HKCR; Subkey: "udss"; ValueName: "URL Protocol"; ValueType: string; ValueData: ""
-          Root: HKCR; Subkey: "udss\DefaultIcon"; ValueType: string; ValueData: "{app}\udsclient.exe,0"
-          Root: HKCR; Subkey: "udss\shell\open\command"; ValueType: string; ValueData: """{app}\udsclient.exe"" ""%1"""
-          "@ | Set-Content -Path dynamic_setup.iss -Encoding UTF8
+                WriteRegStr HKCR "uds" "" "URL:OpenUDS Protocol"
+                WriteRegStr HKCR "uds" "URL Protocol" ""
+                WriteRegStr HKCR "uds\DefaultIcon" "" "`$INSTDIR\udsclient.exe,0"
+                WriteRegStr HKCR "uds\shell\open\command" "" '"`$INSTDIR\udsclient.exe" "%1"'
 
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" dynamic_setup.iss
+                WriteRegStr HKCR "udss" "" "URL:OpenUDS Protocol"
+                WriteRegStr HKCR "udss" "URL Protocol" ""
+                WriteRegStr HKCR "udss\DefaultIcon" "" "`$INSTDIR\udsclient.exe,0"
+                WriteRegStr HKCR "udss\shell\open\command" "" '"`$INSTDIR\udsclient.exe" "%1"'
 
-      - name: Upload Windows Artifact
+                WriteUninstaller "`$INSTDIR\Uninstall.exe"
+                WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\OpenUDSClient" "DisplayName" "OpenUDS Client"
+                WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\OpenUDSClient" "UninstallString" '"`$INSTDIR\Uninstall.exe"'
+                WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\OpenUDSClient" "DisplayVersion" "$($env:APP_VERSION)"
+              SectionEnd
+
+              Section "Uninstall"
+                DeleteRegKey HKCR "uds"
+                DeleteRegKey HKCR "udss"
+                DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\OpenUDSClient"
+                RMDir /r "`$INSTDIR"
+              SectionEnd
+              "@ | Set-Content -Path "installer/installer.nsi" -Encoding UTF8
+          }
+
+      - name: Patch .nsi with version
+        shell: pwsh
+        run: |
+          if (Test-Path "installer/installer.nsi") {
+              (Get-Content "installer/installer.nsi") -replace 'VERSION', $env:APP_VERSION | Set-Content "installer/installer.nsi"
+          }
+
+      - name: Build NSIS Installer
+        shell: pwsh
+        run: |
+          & "C:\Program Files (x86)\NSIS\makensis.exe" installer/installer.nsi
+          Get-ChildItem -Recurse -Filter "*UDSClientSetup*.exe" | ForEach-Object {
+              if ($_.DirectoryName -ne (Get-Item "output").FullName) {
+                  Copy-Item $_.FullName "output/UDSClientSetup-$($env:APP_VERSION).exe" -Force
+              }
+          }
+
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: UDSClientSetup-4.0.0
-          path: output/UDSClientSetup-4.0.0.exe
+          name: UDSClientSetup-${{ env.APP_VERSION }}
+          path: output/*.exe
