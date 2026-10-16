@@ -25,13 +25,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install wheel pyinstaller PyQt5 requests cryptography certifi Pillow
-          if (Test-Path "requirements-win64.txt") {
-              pip install -r requirements-win64.txt
-          } elseif (Test-Path "requirements.txt") {
-              pip install -r requirements.txt
-          } elseif (Test-Path "requirements/windows.txt") {
-              pip install -r requirements/windows.txt
-          }
 
       - name: Build Picture to Icon
         run: |
