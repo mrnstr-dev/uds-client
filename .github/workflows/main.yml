@@ -19,6 +19,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Show Repository Contents
+        run: |
+          Write-Host "--- ALL REPOSITORY FILES ---"
+          Get-ChildItem -Recurse -File | Select-Object FullName
+
       - name: Set up Python 3.10
         uses: actions/setup-python@v5
         with:
@@ -31,7 +36,49 @@ jobs:
         run: python -c "import os; from PIL import Image; icon_found=next((os.path.join(r,f) for r,d,fs in os.walk('.') for f in fs if f.lower().endswith(('.png','.ico')) and 'icon' in f.lower()), None); img=Image.open(icon_found).resize((256,256)) if icon_found and icon_found.endswith('.png') else Image.new('RGBA',(64,64),(30,144,255,255)); img.save('udsclient.ico', format='ICO')"
 
       - name: Generate PyInstaller Build
-        run: python -c "import os, subprocess; py=[os.path.join(r,f) for r,d,fs in os.walk('.') for f in fs if f.endswith('.py') and not any(x in r for x in ['venv','.git','build','dist','output'])]; target=next((f for f in py if 'client' in f.lower() or 'main' in f.lower()), py[0]); subprocess.check_call(['pyinstaller', '--clean', '--console', '--onedir', '--name', 'udsclient', '--icon', 'udsclient.ico', '--paths', '.', '--hidden-import', 'win32crypt', '--hidden-import', 'win32api', '--hidden-import', 'win32con', '--hidden-import', 'PyQt5', '--hidden-import', 'PyQt5.QtCore', '--hidden-import', 'PyQt5.QtWidgets', '--hidden-import', 'PyQt5.QtGui', '--hidden-import', 'PyQt5.QtNetwork', '--hidden-import', 'requests', '--hidden-import', 'cryptography', '--hidden-import', 'certifi', target])"
+        run: |
+          python -c "
+          import os, sys, subprocess
+          print('Current working directory:', os.getcwd())
+          all_files = []
+          for root, dirs, files in os.walk('.'):
+              for f in files:
+                  all_files.append(os.path.join(root, f))
+          
+          print('Total files in repo:', len(all_files))
+          py_files = [f for f in all_files if f.endswith('.py') and not any(x in f for x in ['.git', 'build', 'dist', 'output', 'venv'])]
+          print('Found Python files:', py_files)
+
+          if not py_files:
+              print('ERROR: No python files found anywhere in the repository workspace!')
+              sys.exit(1)
+
+          # Ищем приоритетные имена или берем первый попавшийся
+          target = None
+          for f in py_files:
+              if any(name in f.lower() for name in ['client', 'main', 'uds', 'run']):
+                  target = f
+                  break
+          if not target:
+              target = py_files[0]
+
+          print(f'Selected target for PyInstaller: {target}')
+
+          cmd = [
+              'pyinstaller', '--clean', '--console', '--onedir', '--name', 'udsclient',
+              '--icon', 'udsclient.ico', '--paths', '.',
+              '--hidden-import', 'win32crypt', '--hidden-import', 'win32api', '--hidden-import', 'win32con',
+              '--hidden-import', 'PyQt5', '--hidden-import', 'PyQt5.QtCore', '--hidden-import', 'PyQt5.QtWidgets',
+              '--hidden-import', 'PyQt5.QtGui', '--hidden-import', 'PyQt5.QtNetwork',
+              '--hidden-import', 'requests', '--hidden-import', 'cryptography', '--hidden-import', 'certifi',
+              target
+          ]
+          subprocess.check_call(cmd)
+          "
+
+          if (-not (Test-Path "dist/udsclient/udsclient.exe")) {
+              throw "dist/udsclient/udsclient.exe was not created."
+          }
 
       - name: Install NSIS and Build Installer
         run: |
