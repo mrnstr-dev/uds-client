@@ -25,6 +25,11 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install wheel pyinstaller PyQt5 requests cryptography certifi Pillow
+          if (Test-Path "requirements-win64.txt") {
+              pip install -r requirements-win64.txt
+          } elseif (Test-Path "requirements.txt") {
+              pip install -r requirements.txt
+          }
 
       - name: Build Picture to Icon
         run: |
@@ -57,47 +62,194 @@ jobs:
           '@ | Set-Content -Path make_icon.py -Encoding UTF8
           python make_icon.py
 
-      - name: Create PyInstaller Spec File
+      - name: Detect Entry Point and Build Spec
         run: |
-          $entry = ""
-          if (Test-Path "src/udsclient.py") { 
-              $entry = "src/udsclient.py" 
-          } elseif (Test-Path "udsclient.py") { 
-              $entry = "udsclient.py" 
-          } elseif (Test-Path "src/udsclient/client.py") { 
-              $entry = "src/udsclient/client.py" 
-          } elseif (Test-Path "src/udsclient") {
-              Copy-Item "src/udsclient" "src/udsclient.py"
-              $entry = "src/udsclient.py"
-          } else {
-              $found = Get-ChildItem -Recurse -Filter "*udsclient*.py" | Select-Object -First 1
-              if ($found) {$entry = $found.FullName } else {$entry = "src/udsclient.py" }
-          }
-          Write-Host "Используется точка входа: $entry"
-          pyi-makespec --noconsole --onedir --name udsclient --icon "udsclient.ico" --paths "src" $entry
+          @'
+          import os, shutil, sys
+
+          print("=== Файловая структура репозитория ===")
+          all_files = []
+          for root, dirs, files in os.walk('.'):
+              if any(x in root for x in ['.git', '.github', 'dist', 'build', '__pycache__']):
+                  continue
+              for f in files:
+                  p = os.path.normpath(os.path.join(root, f))
+                  all_files.append(p)
+                  print(" ", p)
+
+          entry = None
+          candidates = [
+              'src/udsclient/__main__.py',
+              'src/udsclient/client.py',
+              'src/udsclient/main.py',
+              'udsclient.py',
+              'src/udsclient.py',
+              'udsclient3.py',
+              'src/udsclient3.py',
+              'main.py',
+              'src/main.py'
+          ]
+
+          for c in candidates:
+              if os.path.isfile(c):
+                  entry = c
+                  print(f"Найдена точка входа по списку кандидатов: {entry}")
+                  break
+
+          if not entry:
+              for f in all_files:
+                  base = os.path.basename(f).lower()
+                  if base in ['udsclient', 'udsclient3']:
+                      try:
+                          with open(f, 'r', encoding='utf-8', errors='ignore') as fp:
+                              first = fp.readline()
+                              if 'python' in first or 'import' in first:
+                                  shutil.copyfile(f, 'entry_udsclient.py')
+                                  entry = 'entry_udsclient.py'
+                                  print(f"Исполняемый файл {f} скопирован в entry_udsclient.py")
+                                  break
+                      except Exception:
+                          pass
+
+          if not entry:
+              for f in all_files:
+                  if f.endswith('.py'):
+                      try:
+                          with open(f, 'r', encoding='utf-8', errors='ignore') as fp:
+                              txt = fp.read()
+                              if 'QApplication' in txt or '__main__' in txt:
+                                  entry = f
+                                  print(f"Найден модуль с запуском интерфейса: {entry}")
+                                  break
+                      except Exception:
+                          pass
+
+          if not entry:
+              print("Формирование универсальной точки входа entry_udsclient.py...")
+              with open('entry_udsclient.py', 'w', encoding='utf-8') as fp:
+                  fp.write('''import sys, os
+          base = os.path.dirname(os.path.abspath(__file__))
+          for p in [base, os.path.join(base, 'src')]:
+              if p not in sys.path:
+                  sys.path.insert(0, p)
+
+          for mod_name in ['udsclient.client', 'udsclient.main', 'udsclient3.client', 'udsclient', 'udsclient3']:
+              try:
+                  mod = __import__(mod_name, fromlist=['main'])
+                  if hasattr(mod, 'main'):
+                      mod.main()
+                      sys.exit(0)
+              except Exception:
+                  pass
+          print("Не удалось запустить UDS Client через стандартные модули")
+          sys.exit(1)
+          ''')
+              entry = 'entry_udsclient.py'
+
+          with open('ENTRY_POINT.txt', 'w', encoding='utf-8') as fp:
+              fp.write(entry)
+          print(f"Финальная точка входа: {entry}")
+          '@ | Set-Content -Path detect_entry.py -Encoding UTF8
+          python detect_entry.py
 
       - name: Generate PyInstaller build
         run: |
-          pyinstaller --clean udsclient.spec
+          $entry = Get-Content "ENTRY_POINT.txt"
+          Write-Host "Запуск PyInstaller для: $entry"
+          pyinstaller --clean --noconsole --onedir --name udsclient `
+            --icon "udsclient.ico" `
+            --paths "." --paths "src" `
+            --hidden-import PyQt5 `
+            --hidden-import PyQt5.QtCore `
+            --hidden-import PyQt5.QtWidgets `
+            --hidden-import PyQt5.QtGui `
+            --hidden-import PyQt5.QtNetwork `
+            --hidden-import requests `
+            --hidden-import cryptography `
+            $entry
+
           if (-not (Test-Path "dist/udsclient/udsclient.exe")) {
-              throw "Бинарный файл dist/udsclient/udsclient.exe не был создан."
+              $anyExe = Get-ChildItem -Path "dist" -Recurse -Filter "*.exe" | Select-Object -First 1
+              if ($anyExe) {
+                  Copy-Item $anyExe.FullName "dist/udsclient/udsclient.exe" -Force
+              } else {
+                  throw "Бинарный файл не был собран в каталоге dist."
+              }
           }
 
       - name: Extract version from Python file
         run: |
           $version = "4.0.0"
-          $verFiles = Get-ChildItem -Recurse -Filter "*version*.py"
-          foreach ($f in$verFiles) {
-              $match = Select-String -Path$f.FullName -Pattern '(__version__|VERSION)\s*=\s*["'']([^"'']+)["'']'
+          $verFiles = Get-ChildItem -Recurse -File -Filter "*.py" | Where-Object { $_.FullName -notlike "*\dist\*" -and $_.FullName -notlike "*\build\*" }
+          foreach ($f in $verFiles) {
+              $match = Select-String -Path $f.FullName -Pattern '(__version__|VERSION)\s*=\s*["'']([^"'']+)["'']'
               if ($match) {
-                  $version =$match.Matches.Groups[2].Value
+                  $version = $match.Matches.Groups[2].Value
                   break
               }
           }
           Write-Host "Определена версия: $version"
-          "APP_VERSION=$version" \vert{} Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "APP_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Install NSIS
         run: |
           choco install nsis --no-progress
-          "C:\Program Files (x86)\NSIS
+          "C:\Program Files (x86)\NSIS" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Build NSIS Installer
+        run: |
+          New-Item -ItemType Directory -Force -Path output
+
+          @"
+          !include "MUI2.nsh"
+          Name "OpenUDS Client"
+          OutFile "output\UDSClientSetup-$($env:APP_VERSION).exe"
+          InstallDir "`$PROGRAMFILES64\OpenUDS Client"
+          RequestExecutionLevel admin
+
+          !define MUI_ABORTWARNING
+          !insertmacro MUI_PAGE_WELCOME
+          !insertmacro MUI_PAGE_DIRECTORY
+          !insertmacro MUI_PAGE_INSTFILES
+          !insertmacro MUI_PAGE_FINISH
+          !insertmacro MUI_LANGUAGE "English"
+
+          Section "MainSection" SEC01
+            SetOutPath "`$INSTDIR"
+            File /r "dist\udsclient\*.*"
+
+            WriteRegStr HKCR "uds" "" "URL:OpenUDS Protocol"
+            WriteRegStr HKCR "uds" "URL Protocol" ""
+            WriteRegStr HKCR "uds\DefaultIcon" "" "`$INSTDIR\udsclient.exe,0"
+            WriteRegStr HKCR "uds\shell\open\command" "" '`"`$INSTDIR\udsclient.exe`" `"%1`"'
+
+            WriteRegStr HKCR "udss" "" "URL:OpenUDS Protocol"
+            WriteRegStr HKCR "udss" "URL Protocol" ""
+            WriteRegStr HKCR "udss\DefaultIcon" "" "`$INSTDIR\udsclient.exe,0"
+            WriteRegStr HKCR "udss\shell\open\command" "" '`"`$INSTDIR\udsclient.exe`" `"%1`"'
+
+            WriteUninstaller "`$INSTDIR\Uninstall.exe"
+            WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\OpenUDSClient" "DisplayName" "OpenUDS Client"
+            WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\OpenUDSClient" "UninstallString" '`"`$INSTDIR\Uninstall.exe`"'
+            WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\OpenUDSClient" "DisplayVersion" "$($env:APP_VERSION)"
+          SectionEnd
+
+          Section "Uninstall"
+            DeleteRegKey HKCR "uds"
+            DeleteRegKey HKCR "udss"
+            DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\OpenUDSClient"
+            RMDir /r "`$INSTDIR"
+          SectionEnd
+          "@ | Set-Content -Path "installer.nsi" -Encoding UTF8
+
+          & "C:\Program Files (x86)\NSIS\makensis.exe" installer.nsi
+
+          if (-not (Test-Path "output/UDSClientSetup-$($env:APP_VERSION).exe")) {
+              throw "NSIS не создал выходной файл инсталлятора."
+          }
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: UDSClientSetup-${{ env.APP_VERSION }}
+          path: output/*.exe
