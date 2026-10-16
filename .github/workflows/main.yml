@@ -8,6 +8,9 @@ on:
 jobs:
   build:
     runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
 
     steps:
       - name: Checkout code
@@ -19,7 +22,6 @@ jobs:
           python-version: '3.10'
 
       - name: Install dependencies
-        shell: pwsh
         run: |
           python -m pip install --upgrade pip
           pip install wheel pyinstaller PyQt5 requests cryptography certifi Pillow
@@ -32,9 +34,8 @@ jobs:
           }
 
       - name: Build Picture to Icon
-        shell: pwsh
         run: |
-          python - << 'EOF'
+          @'
           import os
           from PIL import Image
 
@@ -60,10 +61,10 @@ jobs:
               img = Image.new("RGBA", (64, 64), color=(0, 120, 215, 255))
               img.save("udsclient.ico", format="ICO")
               print("Default icon generated")
-          EOF
+          '@ | Set-Content -Path make_icon.py -Encoding UTF8
+          python make_icon.py
 
       - name: Create PyInstaller Spec File
-        shell: pwsh
         run: |
           $entry = ""
           if (Test-Path "src/udsclient.py") { 
@@ -83,7 +84,6 @@ jobs:
           pyi-makespec --noconsole --onedir --name udsclient --icon "udsclient.ico" --paths "src" $entry
 
       - name: Generate PyInstaller build
-        shell: pwsh
         run: |
           pyinstaller --clean udsclient.spec
           if (-not (Test-Path "dist/udsclient/udsclient.exe")) {
@@ -91,7 +91,6 @@ jobs:
           }
 
       - name: Extract version from Python file
-        shell: pwsh
         run: |
           $version = "4.0.0"
           $verFiles = Get-ChildItem -Recurse -Filter "*version*.py"
@@ -106,85 +105,6 @@ jobs:
           "APP_VERSION=$version" \vert{} Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Install NSIS
-        shell: pwsh
         run: |
           choco install nsis --no-progress
-          "C:\Program Files (x86)\NSIS" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-
-      - name: Prepare files for installer
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path installer
-          New-Item -ItemType Directory -Force -Path output
-
-          $nativeNsi = Get-ChildItem -Recurse -Filter "*.nsi" \vert{} Where-Object { $_.FullName -notlike "*installer\installer.nsi*" } | Select-Object -First 1
-          if ($nativeNsi) {
-              Write-Host "Найден штатный NSIS скрипт: $($nativeNsi.FullName)"
-              Copy-Item $nativeNsi.FullName "installer/installer.nsi" -Force
-          } else {
-              Write-Host "Генерация универсального NSIS скрипта с регистрацией uds:// и udss://..."
-              @"
-              !include "MUI2.nsh"
-              Name "OpenUDS Client"
-              OutFile "..\output\UDSClientSetup-$($env:APP_VERSION).exe"
-              InstallDir "`$PROGRAMFILES64\OpenUDS Client"
-              RequestExecutionLevel admin
-
-              !define MUI_ABORTWARNING
-              !insertmacro MUI_PAGE_WELCOME
-              !insertmacro MUI_PAGE_DIRECTORY
-              !insertmacro MUI_PAGE_INSTFILES
-              !insertmacro MUI_PAGE_FINISH
-              !insertmacro MUI_LANGUAGE "English"
-
-              Section "MainSection" SEC01
-                SetOutPath "`$INSTDIR"
-                File /r "..\dist\udsclient\*.*"
-
-                WriteRegStr HKCR "uds" "" "URL:OpenUDS Protocol"
-                WriteRegStr HKCR "uds" "URL Protocol" ""
-                WriteRegStr HKCR "uds\DefaultIcon" "" "`$INSTDIR\udsclient.exe,0"
-                WriteRegStr HKCR "uds\shell\open\command" "" '"`$INSTDIR\udsclient.exe" "%1"'
-
-                WriteRegStr HKCR "udss" "" "URL:OpenUDS Protocol"
-                WriteRegStr HKCR "udss" "URL Protocol" ""
-                WriteRegStr HKCR "udss\DefaultIcon" "" "`$INSTDIR\udsclient.exe,0"
-                WriteRegStr HKCR "udss\shell\open\command" "" '"`$INSTDIR\udsclient.exe" "%1"'
-
-                WriteUninstaller "`$INSTDIR\Uninstall.exe"
-                WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\OpenUDSClient" "DisplayName" "OpenUDS Client"
-                WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\OpenUDSClient" "UninstallString" '"`$INSTDIR\Uninstall.exe"'
-                WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\OpenUDSClient" "DisplayVersion" "$($env:APP_VERSION)"
-              SectionEnd
-
-              Section "Uninstall"
-                DeleteRegKey HKCR "uds"
-                DeleteRegKey HKCR "udss"
-                DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\OpenUDSClient"
-                RMDir /r "`$INSTDIR"
-              SectionEnd
-              "@ | Set-Content -Path "installer/installer.nsi" -Encoding UTF8
-          }
-
-      - name: Patch .nsi with version
-        shell: pwsh
-        run: |
-          if (Test-Path "installer/installer.nsi") {
-              (Get-Content "installer/installer.nsi") -replace 'VERSION', $env:APP_VERSION | Set-Content "installer/installer.nsi"
-          }
-
-      - name: Build NSIS Installer
-        shell: pwsh
-        run: |
-          & "C:\Program Files (x86)\NSIS\makensis.exe" installer/installer.nsi
-          Get-ChildItem -Recurse -Filter "*UDSClientSetup*.exe" | ForEach-Object {
-              if ($_.DirectoryName -ne (Get-Item "output").FullName) {
-                  Copy-Item $_.FullName "output/UDSClientSetup-$($env:APP_VERSION).exe" -Force
-              }
-          }
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: UDSClientSetup-${{ env.APP_VERSION }}
-          path: output/*.exe
+          "C:\Program Files (x86)\NSIS
