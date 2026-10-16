@@ -27,7 +27,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install wheel pyinstaller PyQt5 pywin32 requests cryptography certifi Pillow
+          pip install wheel pyinstaller PyQt5 PySide6 pywin32 requests cryptography certifi Pillow
 
       - name: Build Picture to Icon
         run: |
@@ -59,103 +59,21 @@ jobs:
           '@ | Set-Content -Path make_icon.py -Encoding UTF8
           python make_icon.py
 
-      - name: Create Dedicated Entry Point
+      - name: Build Resources (if QRC exists)
         run: |
-          @'
-          import sys
-          import os
-          import traceback
-
-          base_dir = os.path.dirname(os.path.abspath(__file__))
-          src_dir = os.path.join(base_dir, 'src')
-          for p in [base_dir, src_dir]:
-              if os.path.isdir(p) and p not in sys.path:
-                  sys.path.insert(0, p)
-
-          log_file = os.path.join(os.environ.get('TEMP', base_dir), 'udsclient_boot.log')
-
-          def log(msg):
-              print(msg)
-              try:
-                  with open(log_file, 'a', encoding='utf-8') as f:
-                      f.write(msg + '\n')
-              except Exception:
-                  pass
-
-          log("="*60)
-          log(f"[UDS Boot] Python: {sys.version}")
-          log(f"[UDS Boot] Command line arguments: {sys.argv}")
-          log(f"[UDS Boot] Base dir: {base_dir}")
-          log(f"[UDS Boot] Sys.path: {sys.path}")
-
-          started = False
-          errors = []
-          targets = [
-              ('UDSClient', 'main'),
-              ('uds.client', 'main'),
-              ('uds', 'main'),
-              ('udsclient.client', 'main'),
-              ('udsclient.__main__', 'main'),
-              ('udsclient.main', 'main'),
-              ('udsclient', 'main'),
-              ('udsclient3.client', 'main'),
-              ('udsclient3', 'main')
-          ]
-
-          for mod_name, func_name in targets:
-              try:
-                  m = __import__(mod_name, fromlist=[func_name])
-                  if hasattr(m, func_name):
-                      log(f"[UDS Boot] Found target: {mod_name}.{func_name}, launching...")
-                      started = True
-                      getattr(m, func_name)()
-                      break
-              except Exception:
-                  errors.append(f"{mod_name}: {traceback.format_exc()}")
-
-          if not started:
-              import importlib
-              for sdir in [src_dir, base_dir]:
-                  if not os.path.isdir(sdir):
-                      continue
-                  for root, dirs, files in os.walk(sdir):
-                      for f in files:
-                          if f.endswith('.py') and not f.startswith('__') and 'test' not in f.lower() and f != 'entry.py':
-                              rel = os.path.relpath(os.path.join(root, f), sdir)
-                              mod_str = os.path.splitext(rel)[0].replace(os.sep, '.')
-                              try:
-                                  m = importlib.import_module(mod_str)
-                                  if hasattr(m, 'main'):
-                                      log(f"[UDS Boot] Found dynamic module: {mod_str}.main, launching...")
-                                      started = True
-                                      m.main()
-                                      break
-                              except Exception:
-                                  continue
-                      if started:
-                          break
-                  if started:
-                      break
-
-          if not started:
-              log("\n" + "!"*60)
-              log("CRITICAL ERROR: Failed to launch UDS Client entry point!")
-              log("!"*60)
-              for err in errors:
-                  log(err)
-              log("!"*60)
-              try:
-                  input("\n[Press ENTER to close this diagnostic window...]")
-              except Exception:
-                  pass
-              sys.exit(1)
-          '@ | Set-Content -Path entry.py -Encoding UTF8
+          if (Test-Path "src/UDSResources.qrc") {
+              pyside6-rcc -o src/UDSResources_rc.py src/UDSResources.qrc
+          } elseif (Test-Path "UDSResources.qrc") {
+              pyside6-rcc -o UDSResources_rc.py UDSResources.qrc
+          }
 
       - name: Generate PyInstaller build
         run: |
+          # Собираем напрямую по официальной точке входа src/UDSClient.py
           pyinstaller --clean --console --onedir --name udsclient `
             --icon "udsclient.ico" `
             --paths "." --paths "src" `
+            --collect-all uds `
             --hidden-import win32crypt `
             --hidden-import win32api `
             --hidden-import win32con `
@@ -167,7 +85,7 @@ jobs:
             --hidden-import requests `
             --hidden-import cryptography `
             --hidden-import certifi `
-            entry.py
+            src/UDSClient.py
 
           if (-not (Test-Path "dist/udsclient/udsclient.exe")) {
               throw "dist/udsclient/udsclient.exe was not created."
