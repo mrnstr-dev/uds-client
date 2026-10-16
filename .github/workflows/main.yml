@@ -1,69 +1,13 @@
-name: build
-
-on:
-  push:
-  pull_request:
-  workflow_dispatch:
-
-jobs:
-  build:
-    runs-on: windows-latest
-    env:
-      PYTHONUTF8: "1"
-      PYTHONIOENCODING: "utf-8"
-    defaults:
-      run:
-        shell: pwsh
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Python 3.10
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-
-      - name: Install dependencies
+- name: Inspect Repo Structure
         run: |
-          python -m pip install --upgrade pip
-          pip install wheel pyinstaller PyQt5 requests cryptography certifi Pillow
-
-      - name: Build Picture to Icon
-        run: |
-          @'
-          import os
-          from PIL import Image
-
-          icon_found = None
-          for root, dirs, files in os.walk('.'):
-              for f in files:
-                  if f.lower().endswith(('.png', '.ico')) and 'icon' in f.lower():
-                      icon_found = os.path.join(root, f)
-                      break
-              if icon_found:
-                  break
-
-          if icon_found and icon_found.endswith('.png'):
-              try:
-                  img = Image.open(icon_found)
-                  img.save("udsclient.ico", format="ICO", sizes=[(16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
-                  print("Icon converted from " + icon_found)
-              except Exception:
-                  icon_found = None
-
-          if not icon_found or not os.path.exists("udsclient.ico"):
-              img = Image.new("RGBA", (64, 64), color=(30, 144, 255, 255))
-              img.save("udsclient.ico", format="ICO")
-              print("Default fallback icon generated")
-          '@ | Set-Content -Path make_icon.py -Encoding UTF8
-          python make_icon.py
+          Get-ChildItem -Recurse -File | Select-Object FullName
 
       - name: Create Dedicated Entry Point
         run: |
           @'
           import sys
           import os
+          import traceback
 
           current_dir = os.path.dirname(os.path.abspath(__file__))
           src_dir = os.path.join(current_dir, 'src')
@@ -71,12 +15,19 @@ jobs:
               if os.path.isdir(p) and p not in sys.path:
                   sys.path.insert(0, p)
 
+          print(f"[UDS Debug] Python version: {sys.version}")
+          print(f"[UDS Debug] Arguments: {sys.argv}")
+          print(f"[UDS Debug] Current dir: {current_dir}")
+
           started = False
+          errors = []
           targets = [
               ('udsclient.client', 'main'),
               ('udsclient.__main__', 'main'),
               ('udsclient.main', 'main'),
               ('udsclient', 'main'),
+              ('uds.client', 'main'),
+              ('uds', 'main'),
               ('udsclient3.client', 'main'),
               ('udsclient3', 'main')
           ]
@@ -85,37 +36,27 @@ jobs:
               try:
                   m = __import__(mod_name, fromlist=[func_name])
                   if hasattr(m, func_name):
+                      print(f"[UDS Debug] Found target: {mod_name}.{func_name}, launching...")
                       getattr(m, func_name)()
                       started = True
                       break
-              except Exception:
-                  continue
+              except Exception as e:
+                  errors.append(f"{mod_name}: {traceback.format_exc()}")
 
           if not started:
-              import importlib
-              for root, dirs, files in os.walk(src_dir if os.path.isdir(src_dir) else current_dir):
-                  for f in files:
-                      if f.endswith('.py') and not f.startswith('__') and 'test' not in f.lower():
-                          rel = os.path.relpath(os.path.join(root, f), src_dir if os.path.isdir(src_dir) else current_dir)
-                          mod_str = os.path.splitext(rel)[0].replace(os.sep, '.')
-                          try:
-                              m = importlib.import_module(mod_str)
-                              if hasattr(m, 'main'):
-                                  m.main()
-                                  started = True
-                                  break
-                          except Exception:
-                              continue
-                  if started:
-                      break
-
-          if not started:
+              print("\n" + "="*50)
+              print("CRITICAL ERROR: Failed to launch UDS Client entry point!")
+              print("="*50)
+              for err in errors:
+                  print(err)
+              print("="*50)
+              input("\nPress ENTER to close this window...")
               sys.exit(1)
           '@ | Set-Content -Path entry.py -Encoding UTF8
 
       - name: Generate PyInstaller build
         run: |
-          pyinstaller --clean --noconsole --onedir --name udsclient `
+          pyinstaller --clean --console --onedir --name udsclient `
             --icon "udsclient.ico" `
             --paths "." --paths "src" `
             --hidden-import PyQt5 `
@@ -131,67 +72,3 @@ jobs:
           if (-not (Test-Path "dist/udsclient/udsclient.exe")) {
               throw "dist/udsclient/udsclient.exe was not created."
           }
-
-      - name: Install NSIS
-        run: |
-          choco install nsis --no-progress
-          "C:\Program Files (x86)\NSIS" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-
-      - name: Build NSIS Installer
-        run: |
-          New-Item -ItemType Directory -Force -Path output
-
-          $nsiScript = @'
-          !include "MUI2.nsh"
-          Name "OpenUDS Client"
-          OutFile "output\UDSClientSetup-4.0.0.exe"
-          InstallDir "$PROGRAMFILES64\OpenUDS Client"
-          RequestExecutionLevel admin
-
-          !define MUI_ABORTWARNING
-          !insertmacro MUI_PAGE_WELCOME
-          !insertmacro MUI_PAGE_DIRECTORY
-          !insertmacro MUI_PAGE_INSTFILES
-          !insertmacro MUI_PAGE_FINISH
-          !insertmacro MUI_LANGUAGE "English"
-
-          Section "MainSection" SEC01
-            SetOutPath "$INSTDIR"
-            File /r "dist\udsclient\*.*"
-
-            WriteRegStr HKCR "uds" "" "URL:OpenUDS Protocol"
-            WriteRegStr HKCR "uds" "URL Protocol" ""
-            WriteRegStr HKCR "uds\DefaultIcon" "" "$INSTDIR\udsclient.exe,0"
-            WriteRegStr HKCR "uds\shell\open\command" "" '"$INSTDIR\udsclient.exe" "%1"'
-
-            WriteRegStr HKCR "udss" "" "URL:OpenUDS Protocol"
-            WriteRegStr HKCR "udss" "URL Protocol" ""
-            WriteRegStr HKCR "udss\DefaultIcon" "" "$INSTDIR\udsclient.exe,0"
-            WriteRegStr HKCR "udss\shell\open\command" "" '"$INSTDIR\udsclient.exe" "%1"'
-
-            WriteUninstaller "$INSTDIR\Uninstall.exe"
-            WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\OpenUDSClient" "DisplayName" "OpenUDS Client"
-            WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\OpenUDSClient" "UninstallString" '"$INSTDIR\Uninstall.exe"'
-            WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\OpenUDSClient" "DisplayVersion" "4.0.0"
-          SectionEnd
-
-          Section "Uninstall"
-            DeleteRegKey HKCR "uds"
-            DeleteRegKey HKCR "udss"
-            DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\OpenUDSClient"
-            RMDir /r "$INSTDIR"
-          SectionEnd
-          '@
-
-          Set-Content -Path "installer.nsi" -Value $nsiScript -Encoding UTF8
-          & "C:\Program Files (x86)\NSIS\makensis.exe" installer.nsi
-
-          if (-not (Test-Path "output/UDSClientSetup-4.0.0.exe")) {
-              throw "NSIS failed to generate output/UDSClientSetup-4.0.0.exe"
-          }
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: UDSClientSetup-4.0.0
-          path: output/UDSClientSetup-4.0.0.exe
