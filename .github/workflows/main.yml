@@ -10,6 +10,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Inspect repository tree
+        shell: pwsh
+        run: |
+          Write-Host "=== Структура репозитория ==="
+          Get-ChildItem -Recurse -Depth 2 | Select-Object FullName
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -17,6 +23,7 @@ jobs:
           architecture: 'x64'
 
       - name: Install Dependencies
+        shell: pwsh
         run: |
           python -m pip install --upgrade pip
           pip install pyinstaller wheel
@@ -24,48 +31,76 @@ jobs:
           pip install PyQt5 requests cryptography certifi
 
       - name: Install Inno Setup
+        shell: pwsh
         run: choco install innosetup --no-progress
 
       - name: Build Executable via PyInstaller
+        shell: pwsh
         run: |
+          # Определяем точный путь к главному скрипту
+          $entryScript = ""
+          if (Test-Path "src/udsclient.py") {
+              $entryScript = "src/udsclient.py"
+          } elseif (Test-Path "udsclient.py") {
+              $entryScript = "udsclient.py"
+          } elseif (Test-Path "src/udsclient") {
+              Copy-Item "src/udsclient" "src/udsclient.py"
+              $entryScript = "src/udsclient.py"
+          } else {
+              $found = Get-ChildItem -Recurse -Filter "*udsclient*.py" | Select-Object -First 1
+              if ($found) { $entryScript = $found.FullName }
+          }
+
+          Write-Host "Используем точку входа: $entryScript"
+
+          # Запуск сборки с добавлением src в пути поиска модулей
           pyinstaller --noconsole --onedir --name udsclient `
-            --icon=server/src/uds/static/modern/img/udsicon.png `
+            --paths "src" `
             --add-data "src;src" `
-            udsclient.py
+            $entryScript
+
+          if (-not (Test-Path "dist/udsclient/udsclient.exe")) {
+              throw "PyInstaller не создал dist/udsclient/udsclient.exe"
+          }
 
       - name: Compile Inno Setup Installer
+        shell: pwsh
         run: |
-          if (Test-Path "installer.iss") {
-            ISCC.exe /DAppVersion=4.0.0 installer.iss
-          } elseif (Test-Path "windows/installer.iss") {
-            ISCC.exe /DAppVersion=4.0.0 windows/installer.iss
-          } else {
-            # Генерация минимального Inno Setup скрипта, если файл отсутствует
-            @"
-            [Setup]
-            AppName=OpenUDS Client
-            AppVersion=4.0.0
-            DefaultDirName={autopf}\OpenUDS Client
-            DefaultGroupName=OpenUDS
-            OutputDir=output
-            OutputBaseFilename=UDSClientSetup-4.0.0
-            Compression=lzma2
-            SolidCompression=yes
+          New-Item -ItemType Directory -Force -Path output
 
-            [Files]
-            Source: "dist\udsclient\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+          # Создаем конфигурационный скрипт инсталлятора
+          @"
+          [Setup]
+          AppName=OpenUDS Client
+          AppVersion=4.0.0
+          DefaultDirName={autopf}\OpenUDS Client
+          DefaultGroupName=OpenUDS
+          OutputDir=output
+          OutputBaseFilename=UDSClientSetup-4.0.0
+          Compression=lzma2
+          SolidCompression=yes
+          ArchitecturesInstallIn64BitMode=x64compatible
+          PrivilegesRequired=admin
 
-            [Registry]
-            Root: HKCR; Subkey: "uds"; ValueType: string; ValueData: "URL:OpenUDS Protocol"; Flags: uninsdeletekey
-            Root: HKCR; Subkey: "uds"; ValueName: "URL Protocol"; ValueType: string; ValueData: ""
-            Root: HKCR; Subkey: "uds\DefaultIcon"; ValueType: string; ValueData: "{app}\udsclient.exe,0"
-            Root: HKCR; Subkey: "uds\shell\open\command"; ValueType: string; ValueData: """{app}\udsclient.exe"" ""%1"""
-            "@ | Set-Content -Path dynamic_setup.iss -Encoding UTF8
-            ISCC.exe dynamic_setup.iss
-          }
+          [Files]
+          Source: "dist\udsclient\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+          [Registry]
+          Root: HKCR; Subkey: "uds"; ValueType: string; ValueData: "URL:OpenUDS Protocol"; Flags: uninsdeletekey
+          Root: HKCR; Subkey: "uds"; ValueName: "URL Protocol"; ValueType: string; ValueData: ""
+          Root: HKCR; Subkey: "uds\DefaultIcon"; ValueType: string; ValueData: "{app}\udsclient.exe,0"
+          Root: HKCR; Subkey: "uds\shell\open\command"; ValueType: string; ValueData: """{app}\udsclient.exe"" ""%1"""
+
+          Root: HKCR; Subkey: "udss"; ValueType: string; ValueData: "URL:OpenUDS Protocol"; Flags: uninsdeletekey
+          Root: HKCR; Subkey: "udss"; ValueName: "URL Protocol"; ValueType: string; ValueData: ""
+          Root: HKCR; Subkey: "udss\DefaultIcon"; ValueType: string; ValueData: "{app}\udsclient.exe,0"
+          Root: HKCR; Subkey: "udss\shell\open\command"; ValueType: string; ValueData: """{app}\udsclient.exe"" ""%1"""
+          "@ | Set-Content -Path dynamic_setup.iss -Encoding UTF8
+
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" dynamic_setup.iss
 
       - name: Upload Windows Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: UDSClientSetup-4.0.0.exe
+          name: UDSClientSetup-4.0.0
           path: output/UDSClientSetup-4.0.0.exe
