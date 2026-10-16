@@ -59,18 +59,20 @@ jobs:
           '@ | Set-Content -Path make_icon.py -Encoding UTF8
           python make_icon.py
 
-      - name: Generate PyInstaller Build via Python
+      - name: Create Python Build Script
         run: |
-          python -c @"
+          @'
           import os
           import subprocess
+          import sys
 
+          print("Searching for Python entry point...")
           py_files = []
           for root, dirs, files in os.walk('.'):
-              if any(x in root for x in ['venv', '.git', 'build', 'dist']):
+              if any(x in root for x in ['venv', '.git', 'build', 'dist', 'output']):
                   continue
               for f in files:
-                  if f.endswith('.py'):
+                  if f.endswith('.py') and f != 'build_client.py' and f != 'make_icon.py':
                       py_files.append(os.path.join(root, f))
 
           target = None
@@ -78,10 +80,15 @@ jobs:
               if 'client' in f.lower() or 'udsclient' in f.lower() or 'main' in f.lower():
                   target = f
                   break
+
           if not target and py_files:
               target = py_files[0]
 
-          print(f'Selected entry point: {target}')
+          if not target:
+              print("Error: No Python entry point found!")
+              sys.exit(1)
+
+          print(f"Selected entry point: {target}")
 
           cmd = [
               'pyinstaller', '--clean', '--console', '--onedir', '--name', 'udsclient',
@@ -93,11 +100,16 @@ jobs:
               target
           ]
           subprocess.check_call(cmd)
-          "
 
-          if (-not (Test-Path "dist/udsclient/udsclient.exe")) {
-              throw "dist/udsclient/udsclient.exe was not created."
-          }
+          if not os.path.exists("dist/udsclient/udsclient.exe"):
+              print("Error: dist/udsclient/udsclient.exe was not created.")
+              sys.exit(1)
+          print("PyInstaller build completed successfully!")
+          '@ | Set-Content -Path build_client.py -Encoding UTF8
+
+      - name: Run Build Script
+        run: |
+          python build_client.py
 
       - name: Install NSIS
         run: |
